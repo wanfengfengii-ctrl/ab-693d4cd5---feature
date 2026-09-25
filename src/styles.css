@@ -281,3 +281,55 @@ button.primary {
   font-size: 11.5px;
   margin-top: 10px;
 }
+
+.detour-panel {
+  margin: 16px 0;
+  border-color: var(--accent);
+}
+
+.detour-fail {
+  margin-top: 14px;
+  background: var(--bad-bg);
+  border: 1px solid var(--bad);
+  border-radius: 8px;
+  padding: 10px 14px;
+}
+
+.detour-fail h4 {
+  margin: 0 0 6px;
+  color: var(--bad);
+  font-size: 14px;
+}
+
+.detour-ok {
+  margin-top: 14px;
+  background: var(--ok-bg);
+  border: 1px solid var(--ok);
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+
+.detour-ok h4 {
+  margin: 0 0 6px;
+  color: var(--ok);
+  font-size: 14px;
+}
+
+.detour-seg {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin: 8px 0;
+}
+
+.detour-seg.has-insert {
+  border-color: var(--accent);
+}
+
+.insert-note {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--warn);
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+}

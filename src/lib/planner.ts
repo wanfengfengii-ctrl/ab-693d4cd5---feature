@@ -8,9 +8,9 @@
  */
 
 import {
-  angularSeparation,
   minAngularSeparationOnShortArc,
   radecToUnitVector,
+  slerp,
   toDegrees,
   type Vec3,
 } from "./geometry";
@@ -84,19 +84,6 @@ export interface AuditFailure {
 }
 
 export type AuditOutcome = AuditResult | AuditFailure;
-
-/** 短弧上 t∈[0,1] 处的视轴单位向量（SLERP）。 */
-function slerp(p: Vec3, q: Vec3, t: number): Vec3 {
-  const theta = angularSeparation(p, q); // 调用方已保证 θ∈(0,π)
-  const sinTheta = Math.sin(theta);
-  const a = Math.sin((1 - t) * theta) / sinTheta;
-  const b = Math.sin(t * theta) / sinTheta;
-  return {
-    x: a * p.x + b * q.x,
-    y: a * p.y + b * q.y,
-    z: a * p.z + b * q.z,
-  };
-}
 
 /**
  * 执行一次审核。输入不合法时返回全部校验错误；

@@ -137,3 +137,132 @@ describe("App：录入与审核流程", () => {
     expect(within(fail).getByText(/第 1 个天体「月球」/)).toBeInTheDocument();
   });
 });
+
+// 把默认草稿改成一条扫过太阳 (60°,0°) 的赤道弧 0°→120°，禁入角 15°。
+async function setupSweepingArc() {
+  render(<App />);
+  for (const [label, value] of [
+    ["关键帧 1 时刻", "0"],
+    ["关键帧 1 赤经", "0"],
+    ["关键帧 1 赤纬", "0"],
+    ["关键帧 2 时刻", "200"],
+    ["关键帧 2 赤经", "120"],
+    ["关键帧 2 赤纬", "0"],
+    ["天体 1 赤经", "60"],
+    ["天体 1 赤纬", "0"],
+  ] as const) {
+    const el = screen.getByLabelText(label);
+    await userEvent.clear(el);
+    await userEvent.type(el, value);
+  }
+  await userEvent.click(screen.getByTestId("audit-button"));
+  expect(screen.getByTestId("verdict-fail")).toBeInTheDocument();
+}
+
+describe("App：批准点绕行建议流程", () => {
+  it("录入合法批准点 → 生成建议：逐原段展示经过点、子弧角与按时长比例分配的新增时刻", async () => {
+    await setupSweepingArc();
+
+    await userEvent.type(screen.getByLabelText("批准点 1 名称"), "北侧点");
+    await userEvent.type(screen.getByLabelText("批准点 1 赤经"), "60");
+    await userEvent.type(screen.getByLabelText("批准点 1 赤纬"), "60");
+    await userEvent.click(screen.getByTestId("detour-button"));
+
+    const ok = screen.getByTestId("detour-ok");
+    expect(ok).toBeInTheDocument();
+    // 采用 1 个新增转折点
+    expect(within(ok).getByText(/新增转折点 1 个/)).toBeInTheDocument();
+    // 逐原段展示
+    const seg = screen.getByTestId("detour-seg-0");
+    expect(within(seg).getByText(/原第 1 段/)).toBeInTheDocument();
+    expect(within(seg).getByText(/经过批准点：/)).toBeInTheDocument();
+    expect(within(seg).getByText(/「北侧点」\(RA=60°/)).toBeInTheDocument();
+    // 两条子弧，各约 75.52°；等长 → 插入时刻恰为原段中点 100 秒
+    expect(within(seg).getAllByText(/75\.522/).length).toBe(2);
+    expect(within(seg).getByText(/t=100/)).toBeInTheDocument();
+  });
+
+  it("一键写回关键帧并重新审核 → 原顺序保留、新增点插入、审核转为可执行", async () => {
+    await setupSweepingArc();
+    await userEvent.type(screen.getByLabelText("批准点 1 名称"), "北侧点");
+    await userEvent.type(screen.getByLabelText("批准点 1 赤经"), "60");
+    await userEvent.type(screen.getByLabelText("批准点 1 赤纬"), "60");
+    await userEvent.click(screen.getByTestId("detour-button"));
+    await userEvent.click(screen.getByTestId("write-back-button"));
+
+    // 写回后自动重新审核，结论转为可执行，绕行面板随之撤下。
+    expect(screen.getByTestId("verdict-pass")).toBeInTheDocument();
+    expect(screen.queryByTestId("detour-ok")).not.toBeInTheDocument();
+    // 关键帧由 2 个变为 3 个：原起点 → 插入点(时刻100) → 原终点
+    expect(screen.getByTestId("keyframe-row-2")).toBeInTheDocument();
+    expect(screen.getByLabelText("关键帧 2 时刻")).toHaveValue("100");
+    expect(screen.getByLabelText("关键帧 2 赤经")).toHaveValue("60");
+    expect(screen.getByLabelText("关键帧 2 赤纬")).toHaveValue("60");
+    // 原首末关键帧坐标原样保留、顺序不变
+    expect(screen.getByLabelText("关键帧 1 赤经")).toHaveValue("0");
+    expect(screen.getByLabelText("关键帧 3 赤经")).toHaveValue("120");
+  });
+
+  it("批准点自身位于禁入区：无可行路径时说明原因，且原草稿与审核结论不被改写", async () => {
+    await setupSweepingArc();
+    await userEvent.type(screen.getByLabelText("批准点 1 名称"), "坏点");
+    await userEvent.type(screen.getByLabelText("批准点 1 赤经"), "60");
+    await userEvent.type(screen.getByLabelText("批准点 1 赤纬"), "5"); // 距太阳仅 5°
+    await userEvent.click(screen.getByTestId("detour-button"));
+
+    const fail = screen.getByTestId("detour-fail");
+    expect(fail).toBeInTheDocument();
+    expect(fail.textContent).toContain("第 1 段");
+    // 原审核失败结论仍在，草稿关键帧数量未变
+    expect(screen.getByTestId("verdict-fail")).toBeInTheDocument();
+    expect(screen.queryByTestId("keyframe-row-2")).not.toBeInTheDocument();
+  });
+
+  it("批准点重名或为空时无法生成（就地报错且按钮禁用）", async () => {
+    await setupSweepingArc();
+    await userEvent.click(screen.getByRole("button", { name: "+ 添加批准点" }));
+    await userEvent.type(screen.getByLabelText("批准点 1 名称"), "同点");
+    await userEvent.type(screen.getByLabelText("批准点 2 名称"), "同点");
+    expect(screen.getByTestId("detour-button")).toBeDisabled();
+    expect(screen.getByText(/名称「同点」.*重复/)).toBeInTheDocument();
+
+    // 改名唯一且补全坐标后可生成
+    await userEvent.clear(screen.getByLabelText("批准点 2 名称"));
+    await userEvent.type(screen.getByLabelText("批准点 2 名称"), "另点");
+    for (const [label, ra, dec] of [
+      ["批准点 1", "60", "60"],
+      ["批准点 2", "60", "-60"],
+    ] as const) {
+      await userEvent.type(screen.getByLabelText(`${label} 赤经`), ra);
+      await userEvent.type(screen.getByLabelText(`${label} 赤纬`), dec);
+    }
+    expect(screen.getByTestId("detour-button")).not.toBeDisabled();
+  });
+
+  it("批准点支持 1–8 个；改动批准点录入会撤下既有绕行建议", async () => {
+    await setupSweepingArc();
+    await userEvent.type(screen.getByLabelText("批准点 1 名称"), "北侧点");
+    await userEvent.type(screen.getByLabelText("批准点 1 赤经"), "60");
+    await userEvent.type(screen.getByLabelText("批准点 1 赤纬"), "60");
+    await userEvent.click(screen.getByTestId("detour-button"));
+    expect(screen.getByTestId("detour-ok")).toBeInTheDocument();
+
+    // 再加一个批准点 → 旧建议撤下
+    await userEvent.click(screen.getByRole("button", { name: "+ 添加批准点" }));
+    expect(screen.queryByTestId("detour-ok")).not.toBeInTheDocument();
+
+    // 可一直添加到 8 个，添加按钮随后禁用
+    for (let i = 0; i < 6; i++) {
+      await userEvent.click(screen.getByRole("button", { name: "+ 添加批准点" }));
+    }
+    expect(screen.getByTestId("waypoint-table").querySelectorAll("tbody tr")).toHaveLength(8);
+    expect(screen.getByRole("button", { name: "+ 添加批准点" })).toBeDisabled();
+  });
+
+  it("审核通过时不展示绕行录入区", async () => {
+    render(<App />);
+    await audit();
+    expect(screen.getByTestId("verdict-pass")).toBeInTheDocument();
+    expect(screen.queryByTestId("detour-button")).not.toBeInTheDocument();
+  });
+});

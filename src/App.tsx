@@ -3,18 +3,29 @@ import {
   auditPlan,
   firstViolation,
   type AuditOutcome,
+  type AuditResult,
   type SegmentResult,
 } from "./lib/planner";
 import {
+  buildDetourKeyframes,
+  planDetour,
+  type DetourResult,
+  type DetourSuccess,
+} from "./lib/detour";
+import {
   MAX_BODIES,
   MAX_KEYFRAMES,
+  MAX_WAYPOINTS,
   MIN_BODIES,
   MIN_KEYFRAMES,
+  MIN_WAYPOINTS,
   validateForm,
+  validateWaypoints,
   type BodyInput,
   type KeyframeInput,
   type PlannerFormState,
   type ValidationError,
+  type WaypointInput,
 } from "./lib/validation";
 
 const initialState: PlannerFormState = {
@@ -41,6 +52,12 @@ export default function App() {
   const [state, setState] = useState<PlannerFormState>(initialState);
   // 审核结论：仅在点击「审核」时生成；草稿的任何改动都会立即置空撤下。
   const [outcome, setOutcome] = useState<AuditOutcome | null>(null);
+  // 审核失败后在结果区录入的批准转折指向（1–8 个，名称唯一、坐标合法）。
+  const [waypointInputs, setWaypointInputs] = useState<WaypointInput[]>([
+    { name: "", ra: "", dec: "" },
+  ]);
+  // 绕行建议：仅对当前失败结论 + 当前批准点录入有效；二者任一变动即撤下。
+  const [detour, setDetour] = useState<DetourResult | null>(null);
 
   // 实时校验只用于输入框就地提示，不代表计划结论。
   const liveErrors = useMemo(() => validateForm(state), [state]);
@@ -53,9 +70,24 @@ export default function App() {
     return m;
   }, [liveErrors]);
 
+  // 批准点录入的就地校验（不影响主草稿，仅在结果区使用）。
+  const waypointErrors = useMemo(
+    () => validateWaypoints(waypointInputs),
+    [waypointInputs],
+  );
+  const waypointErrorMap = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const e of waypointErrors) {
+      const k = errorKey(e);
+      m.set(k, m.has(k) ? `${m.get(k)}；${e.message}` : e.message);
+    }
+    return m;
+  }, [waypointErrors]);
+  const waypointFormErrors = waypointErrors.filter((e) => e.scope === "form");
+
   const formErrors = liveErrors.filter((e) => e.scope === "form");
 
-  /** 任何草稿改动都经此入口：先撤下旧结论，再写入草稿。 */
+  /** 任何草稿改动都经此入口：先撤下旧结论与绕行建议，再写入草稿。 */
   function mutate(producer: (draft: PlannerFormState) => void) {
     setState((prev) => {
       const draft: PlannerFormState = {
@@ -67,6 +99,17 @@ export default function App() {
       return draft;
     });
     setOutcome(null);
+    setDetour(null);
+  }
+
+  /** 批准点录入改动：撤下既有绕行建议（但不动审核结论）。 */
+  function mutateWaypoints(producer: (draft: WaypointInput[]) => void) {
+    setWaypointInputs((prev) => {
+      const draft = prev.map((w) => ({ ...w }));
+      producer(draft);
+      return draft;
+    });
+    setDetour(null);
   }
 
   function patchKeyframe(i: number, patch: Partial<KeyframeInput>) {
@@ -101,8 +144,42 @@ export default function App() {
     mutate((d) => d.bodies.splice(i, 1));
   }
 
+  function patchWaypoint(i: number, patch: Partial<WaypointInput>) {
+    mutateWaypoints((d) => {
+      d[i] = { ...d[i], ...patch };
+    });
+  }
+
+  function addWaypoint() {
+    if (waypointInputs.length >= MAX_WAYPOINTS) return;
+    mutateWaypoints((d) => d.push({ name: "", ra: "", dec: "" }));
+  }
+
+  function removeWaypoint(i: number) {
+    if (waypointInputs.length <= MIN_WAYPOINTS) return;
+    mutateWaypoints((d) => d.splice(i, 1));
+  }
+
   function runAudit() {
     setOutcome(auditPlan(state));
+    setDetour(null);
+  }
+
+  /** 针对当前失败审核结论与批准点录入生成绕行建议。 */
+  function runDetour(audit: AuditResult) {
+    setDetour(planDetour(state, audit, waypointInputs));
+  }
+
+  /** 一键写回：把批准点插入对应原段，保留全部原关键帧顺序，并自动重新审核。 */
+  function writeBackDetour(detourOk: DetourSuccess) {
+    const nextKeyframes = buildDetourKeyframes(state, detourOk);
+    const nextState: PlannerFormState = {
+      ...state,
+      keyframes: nextKeyframes,
+    };
+    setState(nextState);
+    setOutcome(auditPlan(nextState));
+    setDetour(null);
   }
 
   const fieldError = (
@@ -340,7 +417,18 @@ export default function App() {
           </ul>
         </section>
       ) : (
-        <Conclusion outcome={outcome} />
+        <Conclusion
+          outcome={outcome}
+          waypointInputs={waypointInputs}
+          waypointErrorMap={waypointErrorMap}
+          waypointFormErrors={waypointFormErrors}
+          detour={detour}
+          onPatchWaypoint={patchWaypoint}
+          onAddWaypoint={addWaypoint}
+          onRemoveWaypoint={removeWaypoint}
+          onRunDetour={runDetour}
+          onWriteBack={writeBackDetour}
+        />
       )}
 
       {formErrors.length > 0 && outcome === null && (
@@ -350,9 +438,35 @@ export default function App() {
   );
 }
 
-function Conclusion({ outcome }: { outcome: NonNullable<AuditOutcome> }) {
+interface ConclusionProps {
+  outcome: NonNullable<AuditOutcome>;
+  waypointInputs: WaypointInput[];
+  waypointErrorMap: Map<string, string>;
+  waypointFormErrors: ValidationError[];
+  detour: DetourResult | null;
+  onPatchWaypoint: (i: number, patch: Partial<WaypointInput>) => void;
+  onAddWaypoint: () => void;
+  onRemoveWaypoint: (i: number) => void;
+  onRunDetour: (audit: AuditResult) => void;
+  onWriteBack: (detour: DetourSuccess) => void;
+}
+
+function Conclusion({
+  outcome,
+  waypointInputs,
+  waypointErrorMap,
+  waypointFormErrors,
+  detour,
+  onPatchWaypoint,
+  onAddWaypoint,
+  onRemoveWaypoint,
+  onRunDetour,
+  onWriteBack,
+}: ConclusionProps) {
   if (!outcome.ok) return null;
   const violation = firstViolation(outcome);
+  const waypointFieldError = (i: number, field: string) =>
+    waypointErrorMap.get(`waypoint:${i}:${field}`);
 
   return (
     <section aria-label="审核结论" data-testid="audit-result">
@@ -383,24 +497,40 @@ function Conclusion({ outcome }: { outcome: NonNullable<AuditOutcome> }) {
           )}
         </div>
       ) : (
-        <div className="verdict fail" data-testid="verdict-fail">
-          <h3>✗ 结论：计划不可执行</h3>
-          <p>
-            检测到视轴最短大圆轨迹扫入禁入区。以下为按
-            <strong> 时间（段顺序）→ 天体输入顺序 </strong>
-            确定的首个越界见证：
-          </p>
-          <div className="witness">
-            第 {violation.segmentIndex + 1} 段（关键帧{" "}
-            {violation.segmentIndex + 1}→{violation.segmentIndex + 2}）· 第{" "}
-            {violation.bodyIndex + 1} 个天体「{violation.bodyName}」
-            <br />
-            越界时刻 t = {fmt(violation.time)} 秒
-            <br />
-            该点真实最小角距 = {fmt(violation.minAngleDeg)}° &lt; 禁入角{" "}
-            {fmt(violation.exclusionAngleDeg, 4)}°
+        <>
+          <div className="verdict fail" data-testid="verdict-fail">
+            <h3>✗ 结论：计划不可执行</h3>
+            <p>
+              检测到视轴最短大圆轨迹扫入禁入区。以下为按
+              <strong> 时间（段顺序）→ 天体输入顺序 </strong>
+              确定的首个越界见证：
+            </p>
+            <div className="witness">
+              第 {violation.segmentIndex + 1} 段（关键帧{" "}
+              {violation.segmentIndex + 1}→{violation.segmentIndex + 2}）· 第{" "}
+              {violation.bodyIndex + 1} 个天体「{violation.bodyName}」
+              <br />
+              越界时刻 t = {fmt(violation.time)} 秒
+              <br />
+              该点真实最小角距 = {fmt(violation.minAngleDeg)}° &lt; 禁入角{" "}
+              {fmt(violation.exclusionAngleDeg, 4)}°
+            </div>
           </div>
-        </div>
+
+          <DetourPanel
+            audit={outcome}
+            waypointInputs={waypointInputs}
+            waypointFormErrors={waypointFormErrors}
+            canGenerate={waypointErrorMap.size === 0}
+            fieldError={waypointFieldError}
+            detour={detour}
+            onPatchWaypoint={onPatchWaypoint}
+            onAddWaypoint={onAddWaypoint}
+            onRemoveWaypoint={onRemoveWaypoint}
+            onRunDetour={onRunDetour}
+            onWriteBack={onWriteBack}
+          />
+        </>
       )}
 
       <h2 style={{ margin: "16px 2px 10px", fontSize: 15 }}>逐段最小角距明细</h2>
@@ -413,6 +543,287 @@ function Conclusion({ outcome }: { outcome: NonNullable<AuditOutcome> }) {
       ))}
     </section>
   );
+}
+
+interface DetourPanelProps {
+  audit: AuditResult;
+  waypointInputs: WaypointInput[];
+  waypointFormErrors: ValidationError[];
+  canGenerate: boolean;
+  fieldError: (i: number, field: string) => string | undefined;
+  detour: DetourResult | null;
+  onPatchWaypoint: (i: number, patch: Partial<WaypointInput>) => void;
+  onAddWaypoint: () => void;
+  onRemoveWaypoint: (i: number) => void;
+  onRunDetour: (audit: AuditResult) => void;
+  onWriteBack: (detour: DetourSuccess) => void;
+}
+
+function DetourPanel({
+  audit,
+  waypointInputs,
+  waypointFormErrors,
+  canGenerate,
+  fieldError,
+  detour,
+  onPatchWaypoint,
+  onAddWaypoint,
+  onRemoveWaypoint,
+  onRunDetour,
+  onWriteBack,
+}: DetourPanelProps) {
+  // 写回后关键帧数 = 原关键帧数 + 采用的新增转折点数；受 2–8 帧输入限制约束。
+  const resultingCount =
+    detour?.feasible
+      ? audit.segments.length + 1 + detour.totalInserted
+      : null;
+  const writeBackBlocked =
+    resultingCount !== null && resultingCount > MAX_KEYFRAMES;
+
+  return (
+    <section className="panel detour-panel" aria-label="绕行建议">
+      <h2>
+        批准转折指向与绕行建议
+        <span className="hint">
+          {waypointInputs.length}/{MAX_WAYPOINTS} 个 · 名称唯一 · RA∈[0°,360°)
+          · Dec∈[-90°,90°]
+        </span>
+      </h2>
+      <p className="hint" style={{ margin: "0 0 10px" }}>
+        在任意相邻关键帧之间插入批准点生成绕行：保留全部原关键帧顺序与时刻；
+        同一批准点整条计划最多使用一次；每条新短弧均沿短弧连续校核安全通过。
+        先最少化新增转折点数，再最少化相对原计划增加的总转向角，同值按录入顺序稳定选取。
+      </p>
+
+      <table data-testid="waypoint-table">
+        <thead>
+          <tr>
+            <th style={{ width: 44 }}>#</th>
+            <th style={{ width: 180 }}>名称</th>
+            <th style={{ width: 150 }}>赤经 RA（°）</th>
+            <th style={{ width: 150 }}>赤纬 Dec（°）</th>
+            <th style={{ width: 70 }}></th>
+          </tr>
+        </thead>
+        <tbody>
+          {waypointInputs.map((wp, i) => {
+            const nErr = fieldError(i, "name");
+            const raErr = fieldError(i, "ra");
+            const decErr = fieldError(i, "dec");
+            return (
+              <tr key={i} data-testid={`waypoint-row-${i}`}>
+                <td>{i + 1}</td>
+                <td>
+                  <input
+                    aria-label={`批准点 ${i + 1} 名称`}
+                    className={nErr ? "invalid" : ""}
+                    value={wp.name}
+                    onChange={(e) => onPatchWaypoint(i, { name: e.target.value })}
+                  />
+                  {nErr && <div className="row-error">{nErr}</div>}
+                </td>
+                <td>
+                  <input
+                    aria-label={`批准点 ${i + 1} 赤经`}
+                    className={raErr ? "invalid" : ""}
+                    value={wp.ra}
+                    inputMode="decimal"
+                    onChange={(e) => onPatchWaypoint(i, { ra: e.target.value })}
+                  />
+                  {raErr && <div className="row-error">{raErr}</div>}
+                </td>
+                <td>
+                  <input
+                    aria-label={`批准点 ${i + 1} 赤纬`}
+                    className={decErr ? "invalid" : ""}
+                    value={wp.dec}
+                    inputMode="decimal"
+                    onChange={(e) => onPatchWaypoint(i, { dec: e.target.value })}
+                  />
+                  {decErr && <div className="row-error">{decErr}</div>}
+                </td>
+                <td>
+                  <button
+                    type="button"
+                    className="btn-remove"
+                    aria-label={`删除批准点 ${i + 1}`}
+                    disabled={waypointInputs.length <= MIN_WAYPOINTS}
+                    onClick={() => onRemoveWaypoint(i)}
+                  >
+                    删除
+                  </button>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+
+      <div className="toolbar">
+        <button
+          type="button"
+          onClick={onAddWaypoint}
+          disabled={waypointInputs.length >= MAX_WAYPOINTS}
+        >
+          + 添加批准点
+        </button>
+        <button
+          type="button"
+          className="primary"
+          data-testid="detour-button"
+          disabled={!canGenerate}
+          onClick={() => onRunDetour(audit)}
+        >
+          生成绕行建议
+        </button>
+        {!canGenerate && (
+          <span className="hint">请先修正批准点录入后再生成。</span>
+        )}
+      </div>
+      {waypointFormErrors.map((e, i) => (
+        <div key={i} className="row-error">
+          {e.message}
+        </div>
+      ))}
+
+      {detour === null ? null : !detour.feasible ? (
+        <div className="detour-fail" data-testid="detour-fail">
+          <h4>无可行绕行路径（原草稿与审核结论均未改动）</h4>
+          <ul className="error-list">
+            {detour.reasons.map((reason, i) => (
+              <li key={i}>{reason}</li>
+            ))}
+          </ul>
+        </div>
+      ) : (
+        <DetourSuggestion
+          detour={detour}
+          writeBackBlocked={writeBackBlocked}
+          resultingCount={resultingCount!}
+          onWriteBack={onWriteBack}
+        />
+      )}
+    </section>
+  );
+}
+
+function DetourSuggestion({
+  detour,
+  writeBackBlocked,
+  resultingCount,
+  onWriteBack,
+}: {
+  detour: DetourSuccess;
+  writeBackBlocked: boolean;
+  resultingCount: number;
+  onWriteBack: (detour: DetourSuccess) => void;
+}) {
+  return (
+    <div className="detour-ok" data-testid="detour-ok">
+      <h4>
+        ✓ 已生成绕行建议：新增转折点 {detour.totalInserted} 个 · 新增总转向角{" "}
+        {fmt(detour.totalAddedAngleDeg)}°
+      </h4>
+      <p className="hint">
+        原计划总转向角 {fmt(detour.totalOriginalAngleDeg)}° → 绕行后{" "}
+        {fmt(detour.totalNewAngleDeg)}°；全部原关键帧顺序与时刻保持不变，
+        新增时刻按各子弧长度比例严格落在对应原段时段之内。
+        {detour.waypoints.some((w) => !w.used) && (
+          <>
+            {" "}
+            未采用批准点：
+            {detour.waypoints
+              .filter((w) => !w.used)
+              .map((w) => `「${w.name}」`)
+              .join("、")}
+            。
+          </>
+        )}
+      </p>
+
+      {detour.segments.map((seg) => (
+        <div
+          key={seg.segmentIndex}
+          className={`detour-seg${seg.inserted.length ? " has-insert" : ""}`}
+          data-testid={`detour-seg-${seg.segmentIndex}`}
+        >
+          <div className="seg-title">
+            <span>
+              原第 {seg.segmentIndex + 1} 段 · 关键帧{" "}
+              {seg.segmentIndex + 1}→{seg.segmentIndex + 2} · t ∈ [
+              {fmt(seg.startTime)}, {fmt(seg.endTime)}] 秒
+            </span>
+            <span className="seg-min">
+              {seg.inserted.length === 0
+                ? "原短弧直接安全通过，无需插入"
+                : `插入 ${seg.inserted.length} 点 · 新增角 ${fmt(seg.addedAngleDeg)}°`}
+            </span>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>子弧</th>
+                <th className="num">转向角（°）</th>
+                <th className="num">到达点时刻 t（秒）</th>
+              </tr>
+            </thead>
+            <tbody>
+              {seg.subArcs.map((sub, k) => (
+                <tr key={k}>
+                  <td>
+                    {refLabel(sub.from)} → {refLabel(sub.to)}
+                  </td>
+                  <td className="num">{fmt(sub.angleDeg)}</td>
+                  <td className="num">
+                    {sub.to.kind === "waypoint"
+                      ? fmt(seg.inserted[k].time)
+                      : fmt(seg.endTime)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {seg.inserted.length > 0 && (
+            <div className="insert-note">
+              经过批准点：
+              {seg.inserted
+                .map(
+                  (p) =>
+                    `「${p.name}」(RA=${fmt(p.raDeg)}°, Dec=${fmt(p.decDeg)}°, t=${fmt(p.time)})`,
+                )
+                .join(" → ")}
+            </div>
+          )}
+        </div>
+      ))}
+
+      <div className="toolbar">
+        <button
+          type="button"
+          className="primary"
+          data-testid="write-back-button"
+          disabled={writeBackBlocked}
+          onClick={() => onWriteBack(detour)}
+        >
+          一键写回关键帧并重新审核
+        </button>
+        {writeBackBlocked ? (
+          <span className="stale-note">
+            写回后将有 {resultingCount} 个关键帧，超过 {MAX_KEYFRAMES}{" "}
+            个上限，无法通过既有输入校验；请减少采用的批准点。
+          </span>
+        ) : (
+          <span className="hint">
+            写回后共 {resultingCount} 个关键帧，随即重新审核。
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function refLabel(ref: { kind: "keyframe" | "waypoint"; name: string }): string {
+  return ref.kind === "waypoint" ? `批准点「${ref.name}」` : ref.name;
 }
 
 function SegmentCard({

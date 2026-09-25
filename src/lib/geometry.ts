@@ -153,3 +153,24 @@ function evalArc(p: Vec3, q: Vec3, theta: number, u: number): Vec3 {
     z: a * p.z + b * q.z,
   };
 }
+
+/**
+ * 沿短弧 p→q 在 t∈[0,1] 处做 SLERP。调用方须保证 p、q 既不相同也不对跖
+ * （θ∈(0,π)），与 minAngularSeparationOnShortArc 的前置条件一致。
+ */
+export function slerp(p: Vec3, q: Vec3, t: number): Vec3 {
+  const theta = angularSeparation(p, q);
+  return evalArc(p, q, theta, t * theta);
+}
+
+/**
+ * 单位向量反算赤经赤纬（度）：RA∈[0,360)，Dec∈[-90,90]。
+ * 天极附近横纵向分量同时趋零，RA 归算为 0（极点处 RA 本无几何意义）。
+ */
+export function unitVectorToRadec(v: Vec3): { ra: number; dec: number } {
+  const dec = toDegrees(Math.asin(clamp(v.z, -1, 1)));
+  let ra = toDegrees(Math.atan2(v.y, v.x));
+  if (ra < 0) ra += 360;
+  if (ra >= 360 - 1e-9) ra = 0;
+  return { ra, dec };
+}

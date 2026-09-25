@@ -12,6 +12,8 @@ export const MIN_KEYFRAMES = 2;
 export const MAX_KEYFRAMES = 8;
 export const MIN_BODIES = 1;
 export const MAX_BODIES = 6;
+export const MIN_WAYPOINTS = 1;
+export const MAX_WAYPOINTS = 8;
 
 export interface KeyframeInput {
   /** 严格递增的时刻（秒，任意有限数） */
@@ -29,6 +31,13 @@ export interface BodyInput {
   dec: string;
 }
 
+export interface WaypointInput {
+  /** 批准转折指向名称（非空、彼此唯一） */
+  name: string;
+  ra: string;
+  dec: string;
+}
+
 export interface PlannerFormState {
   keyframes: KeyframeInput[];
   exclusionAngle: string; // 统一禁入角（度，> 0）
@@ -36,8 +45,8 @@ export interface PlannerFormState {
 }
 
 export interface ValidationError {
-  /** 错误归属：顶层表单 / 关键帧 / 天体 */
-  scope: "form" | "keyframe" | "body";
+  /** 错误归属：顶层表单 / 关键帧 / 天体 / 批准转折指向 */
+  scope: "form" | "keyframe" | "body" | "waypoint";
   /** 关键帧或天体的序号（从 0 起）；scope=form 时为 -1 */
   index: number;
   /** 该序号内的字段名（time/ra/dec/name/exclusionAngle），无则 "" */
@@ -301,4 +310,90 @@ export function antipodalPointing(
   const vb = radecToUnitVector(b.ra, b.dec);
   // 与 180° 的偏差小于约 2.4e-8 度视为对跖（北天极↔南天极等退化情形自然成立）。
   return dot(va, vb) <= -Math.cos(ANGLE_EPS);
+}
+
+/**
+ * 校验操作员在审核失败后录入的批准转折指向（1–8 个）：
+ * 名称非空且彼此唯一、赤经赤纬均为合法范围内的有限数字。
+ * 不做任何几何可行性判断（绕行求解器负责）。
+ */
+export function validateWaypoints(
+  waypoints: WaypointInput[],
+): ValidationError[] {
+  const errors: ValidationError[] = [];
+
+  if (waypoints.length < MIN_WAYPOINTS) {
+    errors.push({
+      scope: "form",
+      index: -1,
+      field: "waypoints",
+      message: `至少需要 ${MIN_WAYPOINTS} 个批准转折指向`,
+    });
+  }
+  if (waypoints.length > MAX_WAYPOINTS) {
+    errors.push({
+      scope: "form",
+      index: -1,
+      field: "waypoints",
+      message: `批准转折指向不得超过 ${MAX_WAYPOINTS} 个`,
+    });
+  }
+
+  const seen = new Map<string, number>();
+  waypoints.forEach((wp, i) => {
+    const name = wp.name.trim();
+    if (name === "") {
+      errors.push({
+        scope: "waypoint",
+        index: i,
+        field: "name",
+        message: `批准点 ${i + 1}：名称不能为空`,
+      });
+    } else if (seen.has(name)) {
+      errors.push({
+        scope: "waypoint",
+        index: i,
+        field: "name",
+        message: `批准点 ${i + 1}：名称「${name}」与批准点 ${seen.get(name)! + 1} 重复`,
+      });
+    } else {
+      seen.set(name, i);
+    }
+
+    const ra = parseNumber(wp.ra);
+    if (ra === null) {
+      errors.push({
+        scope: "waypoint",
+        index: i,
+        field: "ra",
+        message: `批准点「${name || i + 1}」：赤经必须是有效数字`,
+      });
+    } else if (ra < 0 || ra >= 360) {
+      errors.push({
+        scope: "waypoint",
+        index: i,
+        field: "ra",
+        message: `批准点「${name || i + 1}」：赤经须在 [0°, 360°) 内`,
+      });
+    }
+
+    const dec = parseNumber(wp.dec);
+    if (dec === null) {
+      errors.push({
+        scope: "waypoint",
+        index: i,
+        field: "dec",
+        message: `批准点「${name || i + 1}」：赤纬必须是有效数字`,
+      });
+    } else if (dec < -90 || dec > 90) {
+      errors.push({
+        scope: "waypoint",
+        index: i,
+        field: "dec",
+        message: `批准点「${name || i + 1}」：赤纬须在 [-90°, 90°] 内`,
+      });
+    }
+  });
+
+  return errors;
 }
