@@ -1,0 +1,18 @@
+.DS_Store
+.env
+.venv/
+venv/
+node_modules/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+.pnpm-store/
+*.py[cod]
+
+# 前端构建与本地缓存
+dist/
+coverage/
+.npm-cache/

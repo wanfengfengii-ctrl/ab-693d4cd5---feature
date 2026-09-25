@@ -1,0 +1,35 @@
+# 星敏感器标定转向禁入审核 —— Docker Compose
+#
+# 宿主机访问端口通过环境变量 HOST_PORT 配置（默认 8080）：
+#   HOST_PORT=9090 docker compose up -d --build
+services:
+  # 静态 Web 服务 + 健康检查
+  web:
+    build:
+      context: .
+      target: web
+    image: star-tracker-planner:web
+    container_name: star-tracker-planner-web
+    ports:
+      # 宿主机端口可配置，容器内固定 80
+      - "${HOST_PORT:-8080}:80"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/healthz/"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  # 一次性审核服务：完成代码测试与构建检查后自行退出，
+  # 以测试/构建的退出码报告结果。用法：
+  #   docker compose build verify
+  #   docker compose run --rm verify     # 成功退出码 0，失败非 0
+  verify:
+    build:
+      context: .
+      target: verify
+    image: star-tracker-planner:verify
+    container_name: star-tracker-planner-verify
+    command: ["sh", "-c", "npm run test:run && npm run build"]
+    restart: "no"
