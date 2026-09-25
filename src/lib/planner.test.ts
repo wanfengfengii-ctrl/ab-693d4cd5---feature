@@ -25,6 +25,7 @@ function makeState(
       ra: String(ra),
       dec: String(dec),
     })),
+    approvedPoints: [],
   };
 }
 

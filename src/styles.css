@@ -281,3 +281,43 @@ button.primary {
   font-size: 11.5px;
   margin-top: 10px;
 }
+
+.detour-panel {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--border);
+}
+
+.detour-panel h4 {
+  margin: 0 0 6px;
+  font-size: 14px;
+  color: var(--warn);
+}
+
+.detour-ok {
+  margin-top: 12px;
+  background: rgba(0, 0, 0, 0.22);
+  border: 1px solid var(--ok);
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+
+.detour-ok h4 {
+  color: var(--ok);
+  margin: 0 0 6px;
+  font-size: 14px;
+}
+
+.detour-fail {
+  margin-top: 12px;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid var(--bad);
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 13px;
+}
+
+.detour-seg {
+  margin-top: 8px;
+  background: rgba(0, 0, 0, 0.18);
+}

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   antipodalPointing,
   samePointing,
+  validateApprovedPoints,
   validateForm,
   type PlannerFormState,
 } from "./validation";
@@ -14,6 +15,7 @@ function baseState(): PlannerFormState {
     ],
     exclusionAngle: "15",
     bodies: [{ name: "太阳", ra: "200", dec: "0" }],
+    approvedPoints: [],
   };
 }
 
@@ -220,5 +222,85 @@ describe("validateForm：数量限制", () => {
     const zeroBody = baseState();
     zeroBody.bodies = [];
     expect(errorFields(validateForm(zeroBody))).toContain("form:-1:bodies");
+  });
+
+  it("批准点不影响直接审核：默认表单带空批准点仍可直接审核通过", () => {
+    expect(validateForm(baseState())).toEqual([]);
+  });
+
+  it("skipKeyframeCount：写回计划超过 8 帧时跳过数量上限但其余校验照常", () => {
+    const s = baseState();
+    s.keyframes = Array.from({ length: 16 }, (_, i) => ({
+      time: String(i * 10),
+      ra: String((i * 37) % 360),
+      dec: "0",
+    }));
+    // 默认校验拒绝 16 帧
+    expect(errorFields(validateForm(s))).toContain("form:-1:keyframes");
+    // 写回路径跳过数量限制……
+    expect(
+      validateForm(s, { skipKeyframeCount: true }).filter(
+        (e) => e.field === "keyframes",
+      ),
+    ).toEqual([]);
+    // ……但时刻、坐标、相同/对跖等其余限制仍生效
+    s.keyframes[5] = { time: String(40), ra: "10", dec: "0" }; // 时刻倒序
+    expect(
+      validateForm(s, { skipKeyframeCount: true }).some((e) =>
+        e.message.includes("严格递增"),
+      ),
+    ).toBe(true);
+  });
+});
+
+describe("validateApprovedPoints：数量、名称与坐标", () => {
+  it("至少 1 个、至多 8 个", () => {
+    expect(
+      validateApprovedPoints([]).some((e) => e.field === "approvedPoints"),
+    ).toBe(true);
+    const many = Array.from({ length: 9 }, (_, i) => ({
+      name: `P${i}`,
+      ra: "0",
+      dec: "0",
+    }));
+    expect(
+      validateApprovedPoints(many).some((e) =>
+        e.message.includes("不得超过 8"),
+      ),
+    ).toBe(true);
+  });
+
+  it("名称非空且唯一（含 trim 后重名），错误使用独立 approved 作用域", () => {
+    const errs = validateApprovedPoints([
+      { name: "  ", ra: "10", dec: "0" },
+      { name: "绕点A", ra: "20", dec: "0" },
+      { name: " 绕点A ", ra: "30", dec: "0" },
+    ]);
+    const nameErrs = errs.filter((e) => e.field === "name");
+    expect(nameErrs).toHaveLength(2);
+    expect(nameErrs.every((e) => e.scope === "approved")).toBe(true);
+    expect(nameErrs[0].index).toBe(0);
+    expect(nameErrs[1].index).toBe(2);
+  });
+
+  it("赤经赤纬合法（与关键帧一致的范围与数字规则）", () => {
+    const errs = validateApprovedPoints([
+      { name: "P", ra: "360", dec: "91" },
+      { name: "Q", ra: "abc", dec: "" },
+    ]);
+    const fields = errs.map((e) => `${e.scope}:${e.index}:${e.field}`);
+    expect(fields).toContain("approved:0:ra");
+    expect(fields).toContain("approved:0:dec");
+    expect(fields).toContain("approved:1:ra");
+    expect(fields).toContain("approved:1:dec");
+  });
+
+  it("合法录入无错误（边界 RA=0、Dec=±90）", () => {
+    expect(
+      validateApprovedPoints([
+        { name: "P", ra: "0", dec: "90" },
+        { name: "Q", ra: "359.999", dec: "-90" },
+      ]),
+    ).toEqual([]);
   });
 });

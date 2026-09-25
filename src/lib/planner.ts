@@ -101,9 +101,19 @@ function slerp(p: Vec3, q: Vec3, t: number): Vec3 {
 /**
  * 执行一次审核。输入不合法时返回全部校验错误；
  * 合法时逐段解析最小角距并给出计划结论。
+ *
+ * options.skipKeyframeCount 仅供「绕行建议一键写回后立即重新审核」使用：
+ * 写回计划可含最多 MAX_KEYFRAMES + MAX_APPROVED 个关键帧（手工录入仍限
+ * MAX_KEYFRAMES 个，原有输入限制不变），其余校验（时刻、坐标、相同/对跖）
+ * 照常执行。
  */
-export function auditPlan(state: PlannerFormState): AuditOutcome {
-  const errors = validateForm(state);
+export function auditPlan(
+  state: PlannerFormState,
+  options?: { skipKeyframeCount?: boolean },
+): AuditOutcome {
+  const errors = validateForm(state, {
+    skipKeyframeCount: options?.skipKeyframeCount === true,
+  });
   if (errors.length > 0) {
     return { ok: false, errors };
   }

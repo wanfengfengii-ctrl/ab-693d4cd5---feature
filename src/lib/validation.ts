@@ -12,6 +12,8 @@ export const MIN_KEYFRAMES = 2;
 export const MAX_KEYFRAMES = 8;
 export const MIN_BODIES = 1;
 export const MAX_BODIES = 6;
+export const MIN_APPROVED = 1;
+export const MAX_APPROVED = 8;
 
 export interface KeyframeInput {
   /** 严格递增的时刻（秒，任意有限数） */
@@ -29,16 +31,28 @@ export interface BodyInput {
   dec: string;
 }
 
+export interface ApprovedPointInput {
+  /** 批准转折指向名称（非空、唯一） */
+  name: string;
+  ra: string;
+  dec: string;
+}
+
 export interface PlannerFormState {
   keyframes: KeyframeInput[];
   exclusionAngle: string; // 统一禁入角（度，> 0）
   bodies: BodyInput[];
+  /**
+   * 审核失败后操作员录入的批准转折指向（1–8 个，名称唯一、赤经赤纬合法）。
+   * 仅在绕行建议求解时校验；原直接审核不要求其存在或合法（兼容旧流程）。
+   */
+  approvedPoints: ApprovedPointInput[];
 }
 
 export interface ValidationError {
-  /** 错误归属：顶层表单 / 关键帧 / 天体 */
-  scope: "form" | "keyframe" | "body";
-  /** 关键帧或天体的序号（从 0 起）；scope=form 时为 -1 */
+  /** 错误归属：顶层表单 / 关键帧 / 禁入天体 / 批准转折指向 */
+  scope: "form" | "keyframe" | "body" | "approved";
+  /** 关键帧、天体或批准点的序号（从 0 起）；scope=form 时为 -1 */
   index: number;
   /** 该序号内的字段名（time/ra/dec/name/exclusionAngle），无则 "" */
   field: string;
@@ -58,8 +72,15 @@ function parseNumber(raw: string): number | null {
 /**
  * 全面校验表单，返回所有可定位的错误（UI 可按 scope/index/field 就地标注）。
  * 错误顺序遵循「先时间、再段输入顺序、再天体输入顺序」的报告习惯。
+ *
+ * options.skipKeyframeCount：绕行建议一键写回后，关键帧数可达
+ * MAX_KEYFRAMES + MAX_APPROVED，此时跳过 2–8 的手工录入数量限制
+ * （其余校验照常）；直接审核的默认行为保持不变。
  */
-export function validateForm(state: PlannerFormState): ValidationError[] {
+export function validateForm(
+  state: PlannerFormState,
+  options?: { skipKeyframeCount?: boolean },
+): ValidationError[] {
   const errors: ValidationError[] = [];
 
   // ---- 禁入角 ----
@@ -81,21 +102,23 @@ export function validateForm(state: PlannerFormState): ValidationError[] {
   }
 
   // ---- 关键帧数量 ----
-  if (state.keyframes.length < MIN_KEYFRAMES) {
-    errors.push({
-      scope: "form",
-      index: -1,
-      field: "keyframes",
-      message: `至少需要 ${MIN_KEYFRAMES} 个关键帧`,
-    });
-  }
-  if (state.keyframes.length > MAX_KEYFRAMES) {
-    errors.push({
-      scope: "form",
-      index: -1,
-      field: "keyframes",
-      message: `关键帧不得超过 ${MAX_KEYFRAMES} 个`,
-    });
+  if (!options?.skipKeyframeCount) {
+    if (state.keyframes.length < MIN_KEYFRAMES) {
+      errors.push({
+        scope: "form",
+        index: -1,
+        field: "keyframes",
+        message: `至少需要 ${MIN_KEYFRAMES} 个关键帧`,
+      });
+    }
+    if (state.keyframes.length > MAX_KEYFRAMES) {
+      errors.push({
+        scope: "form",
+        index: -1,
+        field: "keyframes",
+        message: `关键帧不得超过 ${MAX_KEYFRAMES} 个`,
+      });
+    }
   }
 
   // ---- 逐帧解析与范围检查 ----
@@ -301,4 +324,92 @@ export function antipodalPointing(
   const vb = radecToUnitVector(b.ra, b.dec);
   // 与 180° 的偏差小于约 2.4e-8 度视为对跖（北天极↔南天极等退化情形自然成立）。
   return dot(va, vb) <= -Math.cos(ANGLE_EPS);
+}
+
+/**
+ * 校验操作员录入的批准转折指向：数量 1–8、名称非空且唯一、
+ * RA∈[0,360°)、Dec∈[-90°,90°]。
+ *
+ * 独立于 validateForm：原直接审核不读取批准点，故批准点的任何状态
+ * （含缺省为空）都不影响直接审核结论与原有输入限制。
+ */
+export function validateApprovedPoints(
+  points: ApprovedPointInput[],
+): ValidationError[] {
+  const errors: ValidationError[] = [];
+
+  if (points.length < MIN_APPROVED) {
+    errors.push({
+      scope: "form",
+      index: -1,
+      field: "approvedPoints",
+      message: `至少需要 ${MIN_APPROVED} 个批准转折指向`,
+    });
+  }
+  if (points.length > MAX_APPROVED) {
+    errors.push({
+      scope: "form",
+      index: -1,
+      field: "approvedPoints",
+      message: `批准转折指向不得超过 ${MAX_APPROVED} 个`,
+    });
+  }
+
+  const seen = new Map<string, number>();
+  points.forEach((p, i) => {
+    const name = p.name.trim();
+    if (name === "") {
+      errors.push({
+        scope: "approved",
+        index: i,
+        field: "name",
+        message: `批准点 ${i + 1}：名称不能为空`,
+      });
+    } else if (seen.has(name)) {
+      errors.push({
+        scope: "approved",
+        index: i,
+        field: "name",
+        message: `批准点 ${i + 1}：名称「${name}」与批准点 ${seen.get(name)! + 1} 重复`,
+      });
+    } else {
+      seen.set(name, i);
+    }
+
+    const ra = parseNumber(p.ra);
+    if (ra === null) {
+      errors.push({
+        scope: "approved",
+        index: i,
+        field: "ra",
+        message: `批准点「${name || i + 1}」：赤经必须是有效数字`,
+      });
+    } else if (ra < 0 || ra >= 360) {
+      errors.push({
+        scope: "approved",
+        index: i,
+        field: "ra",
+        message: `批准点「${name || i + 1}」：赤经须在 [0°, 360°) 内`,
+      });
+    }
+
+    const dec = parseNumber(p.dec);
+    if (dec === null) {
+      errors.push({
+        scope: "approved",
+        index: i,
+        field: "dec",
+        message: `批准点「${name || i + 1}」：赤纬必须是有效数字`,
+      });
+    } else if (dec < -90 || dec > 90) {
+      errors.push({
+        scope: "approved",
+        index: i,
+        field: "dec",
+        message: `批准点「${name || i + 1}」：赤纬须在 [-90°, 90°] 内`,
+      });
+    }
+  });
+
+  return errors;
 }
